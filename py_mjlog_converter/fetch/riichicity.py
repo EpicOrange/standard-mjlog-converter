@@ -53,7 +53,7 @@ class RiichiCityAPI:
 
 RiichiCityLog = List[Any]
 
-async def fetch_riichicity(identifier: str) -> Tuple[RiichiCityLog, Dict[str, Any], Optional[int]]:
+async def fetch_riichicity(identifier: str) -> Tuple[RiichiCityLog, Dict[str, Any], Optional[int], str]:
     """
     Fetch a raw riichi city log given the log identifier.
     Example identifier: cm775fuai08d9bndf24g@1
@@ -92,7 +92,7 @@ async def fetch_riichicity(identifier: str) -> Tuple[RiichiCityLog, Dict[str, An
                 starting_dealer_pos = json.loads(game_data["data"]["handRecord"][0]["handEventRecord"][0]["data"])["dealer_pos"]
                 player = (player_pos - starting_dealer_pos) % 4
                 break
-    return game_data["data"]["handRecord"], game_data["data"], player
+    return game_data["data"]["handRecord"], game_data["data"], player, identifier
 
 def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List[Kyoku], GameMetadata]:
     import json
@@ -106,7 +106,7 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
     all_walls: List[List[int]] = []
     starting_dealer_pos = -1
     game_score: List[int] = []
-    final_score: List[float] = []
+    final_score: List[int] = []
 
     RC_TO_TENHOU_TILE = {
         # pinzu = 1-9
@@ -139,6 +139,8 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
         events: List[Event] = []
         starting_dora = -1
         last_seat = -1
+        last_draw = 0
+        just_kanned = -1
         last_discard_index = -1
         round, honba = -1, -1
         haipai: List[Tuple[int, ...]] = [()] * num_players
@@ -171,14 +173,16 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
                         for i, hand in enumerate(haipai):
                             events.append((i, "haipai", sorted_hand(hand)))
                         events.append((seat, "start_game", round, honba, riichi_sticks, tuple(scores)))
-                        events.append((seat, "draw", starting_draw))
+                        events.append((seat, "draw", starting_draw, False))
+                        last_draw = starting_draw
                     else: # tenpai opportunity
                         pass
                 else: # draw
                     tile = RC_TO_TENHOU_TILE[data["in_card"]]
                     tiles_in_wall -= 1
-                    events.append((seat, "draw", tile))
+                    events.append((seat, "draw", tile, just_kanned))
                     last_seat = seat
+                    last_draw = tile
             elif ev["eventType"] == 3: # call opportunity
                 tile = RC_TO_TENHOU_TILE[data["out_card"]]
             elif ev["eventType"] == 4: # discard or call
@@ -187,8 +191,10 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
                 call_names = {2: "chii", 3: "chii", 4: "chii", 5: "pon", 6: "minkan", 8: "ankan", 9: "kakan", 13: "kita"}
                 if data["action"] == 11: # discard
                     last_discard_index = len(events)
-                    events.append((seat, "discard", tile))
+                    events.append((seat, "discard", tile, tile == last_draw))
                     last_seat = seat
+                    last_draw = 0
+                    just_kanned = False
                 elif data["action"] in call_names.keys(): # chii/chii/chii/pon/daiminkan/ankan/kakan/kita
                     call_type = call_names[data["action"]]
                     if call_type in {"kakan", "kita"}:
@@ -198,6 +204,7 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
                     call_dir = Dir((4 + last_seat - seat) % 4)
                     events.append((seat, call_type, tile, call_tiles, call_dir))
                     last_seat = seat
+                    just_kanned = call_type in {"daiminkan", "ankan", "kakan", "kita"}
                 elif data["action"] == 7: # ron
                     pass
                 elif data["action"] == 10: # tsumo
@@ -266,14 +273,15 @@ def parse_riichicity(log: RiichiCityLog, metadata: Dict[str, Any]) -> Tuple[List
                 # these are unsorted, so we need to sort them
                 user_data = sorted(data["user_data"], key=lambda p: player_ids.index(p["user_id"]))
                 game_score = [p["point_num"] for p in user_data]
-                final_score = [p["score"] / 10.0 for p in user_data]
+                final_score = [p["score"] * 100 for p in user_data]
                 pass
             elif ev["eventType"] == 7: # new dora
                 dora_indicators.append(RC_TO_TENHOU_TILE[data["cards"][-1]])
             elif ev["eventType"] == 8: # riichi
                 # modify the previous discard
                 assert events[last_discard_index][1] == "discard", events[last_discard_index]
-                events[last_discard_index] = (events[last_discard_index][0], "riichi", *events[last_discard_index][2:])
+                tile = events[last_discard_index][2]
+                events[last_discard_index] = (events[last_discard_index][0], "riichi", tile, events[last_discard_index][3])
             elif ev["eventType"] == 9: # ???
                 pass
             elif ev["eventType"] == 11: # riichi tenpai info

@@ -42,7 +42,7 @@ def parse_tenhou_link(link: str) -> Tuple[str, Optional[int]]:
 
     return identifier, player_seat
 
-def fetch_tenhou(link: str, use_xml: bool = True) -> Tuple[TenhouLog, Dict[str, Any], Optional[int]]:
+def fetch_tenhou(link: str, use_xml: bool = True) -> Tuple[TenhouLog, Dict[str, Any], Optional[int], str]:
     """
     Fetch a raw tenhou log from a given link, returning a parsed log and the specified player's seat
     Example link: https://tenhou.net/0/?log=2023072712gm-0089-0000-eff781e1&tw=1&ts=4
@@ -83,7 +83,7 @@ def fetch_tenhou(link: str, use_xml: bool = True) -> Tuple[TenhouLog, Dict[str, 
         save_cache(filename=f"game-{identifier}.json", data=json.dumps(game_data, ensure_ascii=False).encode("utf-8"))
     log = game_data["log"]
     del game_data["log"]
-    return log, game_data, player_seat
+    return log, game_data, player_seat, identifier
 
 def tenhou_xml_to_log(identifier: str, xml: str) -> Tuple[TenhouLog, Dict[str, Any]]:
     """
@@ -458,6 +458,7 @@ def parse_tenhou(raw_kyokus: TenhouLog, metadata: Dict[str, Any]) -> Tuple[List[
         # Emit events for draws and discards and calls, in order
         # stops when the current player has no more draws; remaining
         # draws handled after this loop
+        just_kanned = False
         while i[curr_seat] < len(draws[curr_seat]):
             keep_curr_seat = False
             def handle_call(call: str) -> int:
@@ -484,12 +485,17 @@ def parse_tenhou(raw_kyokus: TenhouLog, metadata: Dict[str, Any]) -> Tuple[List[
                     call_dir = get_call_dir(call)
                     assert call_dir != Dir.SELF, f"somehow called {call_type} on ourselves"
                 
-                events.append((curr_seat, call_type, called_tile, call_tiles, call_dir))
+                if call_type == "riichi":
+                    events.append((curr_seat, call_type, called_tile, False))
+                else:
+                    events.append((curr_seat, call_type, called_tile, call_tiles, call_dir))
 
                 if call_type in {"minkan", "ankan", "kakan", "kita"}:
                     nonlocal keep_curr_seat
+                    nonlocal just_kanned
                     keep_curr_seat = True # we get another turn after any kan/kita
-                
+                    just_kanned = True
+
                 return called_tile
 
             # first handle the draw
@@ -507,7 +513,8 @@ def parse_tenhou(raw_kyokus: TenhouLog, metadata: Dict[str, Any]) -> Tuple[List[
             else:
                 if not rules.use_red_fives:
                     draw = normalize_red_five(draw)
-                events.append((curr_seat, "draw", draw))
+                events.append((curr_seat, "draw", draw, just_kanned))
+                just_kanned = False
 
             # if you tsumo, there's no next discard, so we jump out here
             if i[curr_seat] >= len(discards[curr_seat]):
@@ -521,20 +528,20 @@ def parse_tenhou(raw_kyokus: TenhouLog, metadata: Dict[str, Any]) -> Tuple[List[
             # can be either a discard, [r]iichi, [a]nkan, [k]akan, or kita(f).
             discard = discards[curr_seat][i[curr_seat]]
             if discard == "r60": # tsumogiri riichi
-                events.append((curr_seat, "riichi", draw, [draw], 0))
+                events.append((curr_seat, "riichi", draw, [draw], 0, True))
             elif type(discard) is str:
                 # `handle_call()` removes the red five if necessary
                 discard = handle_call(discard)
             elif discard == 0: # the draw earlier was daiminkan, so no discard happens
                 pass
             else:
-                if discard == 60:
-                    # tsumogiri
+                tsumogiri = discard == 60
+                if tsumogiri:
                     discard = draw
                 elif not rules.use_red_fives:
                     # tedashi -- removes the five if necessary
                     discard = normalize_red_five(discard)
-                events.append((curr_seat, "discard", discard))
+                events.append((curr_seat, "discard", discard, tsumogiri))
 
             i[curr_seat] += 1 # done processing the ith draw/discard for this player
 
@@ -567,7 +574,7 @@ def parse_tenhou(raw_kyokus: TenhouLog, metadata: Dict[str, Any]) -> Tuple[List[
     parsed_metadata = GameMetadata(num_players = num_players,
                                    name = metadata["name"],
                                    game_score = metadata["sc"][::2],
-                                   final_score = metadata["sc"][1::2],
+                                   final_score = [int(s*1000) for s in metadata["sc"][1::2]],
                                    rules = rules)
     parsed_metadata.rules.calculate_placement_bonus(parsed_metadata.game_score, parsed_metadata.final_score)
 

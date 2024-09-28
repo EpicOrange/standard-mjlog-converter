@@ -161,7 +161,7 @@ def parse_majsoul_link(link: str) -> Tuple[str, Optional[int], Optional[int]]:
         player_seat = int(player_seat)
     return identifier, ms_account_id, player_seat
 
-async def fetch_majsoul(link: str) -> Tuple[MajsoulLog, Dict[str, Any], Optional[int]]:
+async def fetch_majsoul(link: str) -> Tuple[MajsoulLog, Dict[str, Any], Optional[int], str]:
     """
     Fetch a raw majsoul log from a given link, returning a parsed log and the seat of the player specified through `_a...` or `_a..._[0-3]`
     Example link: https://mahjongsoul.game.yo-star.com/?paipu=230814-90607dc4-3bfd-4241-a1dc-2c639b630db3_a878761203
@@ -195,7 +195,7 @@ async def fetch_majsoul(link: str) -> Tuple[MajsoulLog, Dict[str, Any], Optional
             if acc.account_id == ms_account_id:
                 player = acc.seat
                 break
-    return actions, MessageToDict(record.head), player
+    return actions, MessageToDict(record.head), player, identifier
 
 def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[Kyoku], GameMetadata]:
     """
@@ -209,6 +209,8 @@ def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[K
     majsoul_hand_to_tenhou = lambda hand: list(sorted_hand(map(convert_tile, hand)))
     majsoul_hand_to_tenhou_unsorted = lambda hand: list(map(convert_tile, hand))
     last_seat = 0
+    last_draw = 0
+    just_kanned = False
     all_events: List[List[Event]] = []
     all_walls: List[List[int]] = []
     events: List[Event] = []
@@ -257,17 +259,22 @@ def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[K
             riichi_sticks = action.liqibang
             events.append((t, "start_game", round, honba, riichi_sticks, tuple(action.scores)))
             # pretend we drew the first tile
-            events.append((action.ju, "draw", first_tile))
+            events.append((action.ju, "draw", first_tile, False))
+            last_draw = first_tile
             dora_indicators = [convert_tile(dora) for dora in action.doras]
         elif isinstance(action, proto.RecordDealTile):
             # tile drawn: push "draw" event
-            events.append((action.seat, "draw", convert_tile(action.tile)))
+            tile = convert_tile(action.tile)
+            events.append((action.seat, "draw", tile, just_kanned))
+            last_draw = tile
+            just_kanned = False
             if len(action.doras) > 0:
                 dora_indicators = [convert_tile(dora) for dora in action.doras]
         elif isinstance(action, proto.RecordDiscardTile):
             # tile discarded: push "discard" or "riichi" event
             tile = convert_tile(action.tile)
-            events.append((action.seat, "riichi" if action.is_liqi else "discard", tile))
+            events.append((action.seat, "riichi" if action.is_liqi else "discard", tile, last_draw == tile))
+            last_draw = 0
         elif isinstance(action, proto.RecordChiPengGang):
             # chii/pon/daiminkan call made: push the corresponding call event
             assert isinstance(action, proto.RecordChiPengGang)
@@ -275,6 +282,7 @@ def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[K
             called_tile = call_tiles[-1]
             if len(action.tiles) == 4:
                 call_type = "minkan"
+                just_kanned = True
             elif same_tile(action.tiles[0], action.tiles[1]):
                 call_type = "pon"
             else:
@@ -290,6 +298,7 @@ def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[K
                 call_type = "ankan"
             else:
                 raise Exception(f"unhandled RecordAnGangAddGang of type {action.type}: {action}")
+            just_kanned = True
             events.append((action.seat, call_type, tile, (tile,)*4, Dir.SELF))
             dora_indicators.extend(convert_tile(dora) for dora in action.doras)
         elif isinstance(action, proto.RecordBaBei): # kita
@@ -359,7 +368,7 @@ def parse_majsoul(actions: MajsoulLog, metadata: Dict[str, Any]) -> Tuple[List[K
     parsed_metadata = GameMetadata(num_players = num_players,
                                    name = nicknames,
                                    game_score = [result_data[i][1] for i in range(num_players)],
-                                   final_score = [result_data[i][2]/1000.0 for i in range(num_players)],
+                                   final_score = [result_data[i][2] for i in range(num_players)],
                                    rules = GameRules.from_majsoul_detail_rule(num_players, metadata["config"]["mode"]["detailRule"], metadata["config"]["mode"]["mode"]))
     parsed_metadata.rules.calculate_placement_bonus(parsed_metadata.game_score, parsed_metadata.final_score)
 

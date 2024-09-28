@@ -301,9 +301,9 @@ class GameRules:
                    placement_bonus = []
                    )
     
-    def calculate_placement_bonus(self, final_points: List[int], final_scores: List[float]):
+    def calculate_placement_bonus(self, final_points: List[int], final_scores: List[int]):
         if len(self.placement_bonus) == 0:
-            to_bonus = lambda p, s: round(s-float((p-self.starting_points)/1000))
+            to_bonus = lambda p, s: round(s-(p-self.starting_points))
             bonuses = [to_bonus(p, s) for p, s in zip(final_points, final_scores)]
             self.placement_bonus = 5*[list(reversed(list(sorted(bonuses))))[1:]]
 
@@ -329,5 +329,5 @@ class GameMetadata:
     num_players: int
     name: List[str]                  # name of each player indexed by seat
     game_score: List[int]            # final scores (points) indexed by seat
-    final_score: List[float]         # final scores (points plus uma) indexed by seat
+    final_score: List[int]         # final scores (points plus uma) indexed by seat
     rules: GameRules                 # game rules
